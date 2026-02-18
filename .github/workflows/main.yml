@@ -1,96 +1,58 @@
-name: ULTRA RDP
+name: GOD MODE CLOUD PC
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *'
 
 jobs:
-  ultra-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 360
+  cloud-pc:
+    runs-on: self-hosted
 
     steps:
 
-    # =========================================
-    # 🔧 Enable RDP
-    # =========================================
-    - name: Enable RDP
+    # =====================================
+    # 🟢 SYSTEM STATUS
+    # =====================================
+    - name: Get System Info
+      shell: powershell
       run: |
-        Set-ItemProperty `
-          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-          -Name "fDenyTSConnections" -Value 0
+        $cpu = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+        $ram = (Get-CimInstance Win32_OperatingSystem)
+        $ramUsed = [math]::Round(($ram.TotalVisibleMemorySize - $ram.FreePhysicalMemory)/1MB,2)
+        $ramTotal = [math]::Round($ram.TotalVisibleMemorySize/1MB,2)
 
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Restart-Service TermService -Force
+        echo "CPU=$([int]$cpu)" >> $env:GITHUB_ENV
+        echo "RAM_USED=$ramUsed" >> $env:GITHUB_ENV
+        echo "RAM_TOTAL=$ramTotal" >> $env:GITHUB_ENV
 
-    # =========================================
-    # 🔐 Create Secure User
-    # =========================================
-    - name: Create RDP User
+    # =====================================
+    # 🌐 GET TAILSCALE IP
+    # =====================================
+    - name: Get Private IP
+      shell: powershell
       run: |
-        $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
-        $password = -join (1..24 | ForEach-Object {
-          $chars[(Get-Random -Maximum $chars.Length)]
-        })
-
-        $secure = ConvertTo-SecureString $password -AsPlainText -Force
-
-        New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
-        Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-
-        echo "RDP_PASS=$password" >> $env:GITHUB_ENV
-
-    # =========================================
-    # 🌐 Install Tailscale
-    # =========================================
-    - name: Install Tailscale
-      run: |
-        Invoke-WebRequest `
-          https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi `
-          -OutFile ts.msi
-
-        Start-Process msiexec.exe `
-          -ArgumentList "/i ts.msi /quiet /norestart" -Wait
-
-    - name: Connect Tailscale
-      run: |
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-          --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
-
-        for ($i=0; $i -lt 30; $i++) {
-          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          if ($ip) { break }
-          Start-Sleep 4
-        }
-
-        if (-not $ip) { exit 1 }
-
+        $ip = (tailscale ip -4)
         echo "TS_IP=$ip" >> $env:GITHUB_ENV
 
-    # =========================================
-    # 📩 Telegram Report (YAML SAFE)
-    # =========================================
-    - name: Send Telegram Report
+    # =====================================
+    # 📩 TELEGRAM CLOUD PC PANEL
+    # =====================================
+    - name: Send Control Panel Info
+      shell: powershell
       run: |
-        $start = Get-Date
-        $duration = 6
-        $expiry = $start.AddHours($duration)
+        $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-        # Using an array keeps YAML indentation happy!
         $msg = @(
-          "🔐 ULTRA RDP SESSION READY",
-          "",
-          "🌐 Address   : $env:TS_IP",
-          "👤 Username  : RDP",
-          "🔑 Password  : $env:RDP_PASS",
-          "",
-          "🕒 Start     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))",
-          "⏳ Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))",
-          "⏱️ Duration  : $duration Hours",
-          "",
-          "⚠️ Session auto-terminates"
+        "☁️ GOD MODE CLOUD PC ONLINE",
+        "",
+        "🌐 Private IP : $env:TS_IP",
+        "",
+        "📊 SYSTEM STATUS",
+        "CPU Usage    : $env:CPU %",
+        "RAM Usage    : $env:RAM_USED / $env:RAM_TOTAL GB",
+        "",
+        "🕒 Server Time: $time",
+        "",
+        "🔐 Connect via RDP using Tailscale IP"
         ) -join "`n"
 
         Invoke-RestMethod `
@@ -98,46 +60,18 @@ jobs:
           -Method Post `
           -ContentType "application/json" `
           -Body (@{
-            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
-            text    = $msg
+            chat_id="${{ secrets.TELEGRAM_CHAT_ID }}"
+            text=$msg
           } | ConvertTo-Json)
 
-    # =========================================
-    # 📊 ULTRA Dashboard + Animated Expiry
-    # =========================================
-    - name: Maintain Session (ULTRA)
+    # =====================================
+    # ⛔ OPTIONAL SHUTDOWN CONTROL
+    # =====================================
+    - name: Wait For Manual Cancel
+      shell: powershell
       run: |
-        $start = Get-Date
-        $duration = 6
-        $expiry = $start.AddHours($duration)
-
-        Write-Host ""
-        Write-Host "==========================================="
-        Write-Host "         ULTRA RDP SESSION ACTIVE"
-        Write-Host "==========================================="
-        Write-Host " Address   : $env:TS_IP"
-        Write-Host " Username  : RDP"
-        Write-Host " Password  : $env:RDP_PASS"
-        Write-Host " Started   : $($start.ToString('yyyy-MM-dd HH:mm:ss'))"
-        Write-Host " Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))"
-        Write-Host " Duration  : $duration Hours"
-        Write-Host "==========================================="
-        Write-Host ""
+        Write-Host "Cloud PC is running. Cancel workflow to stop monitoring."
 
         while ($true) {
-          $now = Get-Date
-          $remain = $expiry - $now
-
-          if ($remain.TotalSeconds -le 0) {
-            Write-Host ""
-            Write-Host "SESSION EXPIRED — TERMINATING"
-            break
-          }
-
-          $h = [int]$remain.TotalHours
-          $m = $remain.Minutes
-          $s = $remain.Seconds
-
-          Write-Host ("Remaining Time: {0:D2}:{1:D2}:{2:D2}" -f $h,$m,$s)
-          Start-Sleep 30
+          Start-Sleep -Seconds 300
         }
