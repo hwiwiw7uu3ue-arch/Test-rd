@@ -1,77 +1,167 @@
-name: GOD MODE CLOUD PC
+name: RDP
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'   # Runs every 6 hours at minute 0
 
 jobs:
-  cloud-pc:
-    runs-on: self-hosted
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
 
     steps:
+      - name: Restore cached data (for persistence)
+        uses: actions/cache@v3
+        with:
+          path: C:/rdp_persistent_data
+          key: ${{ runner.os }}-rdp-data-${{ hashFiles('**/*') }}
 
-    # =====================================
-    # 🟢 SYSTEM STATUS
-    # =====================================
-    - name: Get System Info
-      shell: powershell
-      run: |
-        $cpu = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
-        $ram = (Get-CimInstance Win32_OperatingSystem)
-        $ramUsed = [math]::Round(($ram.TotalVisibleMemorySize - $ram.FreePhysicalMemory)/1MB,2)
-        $ramTotal = [math]::Round($ram.TotalVisibleMemorySize/1MB,2)
+      - name: Configure Core RDP Settings
+        run: |
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
 
-        echo "CPU=$([int]$cpu)" >> $env:GITHUB_ENV
-        echo "RAM_USED=$ramUsed" >> $env:GITHUB_ENV
-        echo "RAM_TOTAL=$ramTotal" >> $env:GITHUB_ENV
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
 
-    # =====================================
-    # 🌐 GET TAILSCALE IP
-    # =====================================
-    - name: Get Private IP
-      shell: powershell
-      run: |
-        $ip = (tailscale ip -4)
-        echo "TS_IP=$ip" >> $env:GITHUB_ENV
+      - name: Create RDP User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
 
-    # =====================================
-    # 📩 TELEGRAM CLOUD PC PANEL
-    # =====================================
-    - name: Send Control Panel Info
-      shell: powershell
-      run: |
-        $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
 
-        $msg = @(
-        "☁️ GOD MODE CLOUD PC ONLINE",
-        "",
-        "🌐 Private IP : $env:TS_IP",
-        "",
-        "📊 SYSTEM STATUS",
-        "CPU Usage    : $env:CPU %",
-        "RAM Usage    : $env:RAM_USED / $env:RAM_TOTAL GB",
-        "",
-        "🕒 Server Time: $time",
-        "",
-        "🔐 Connect via RDP using Tailscale IP"
-        ) -join "`n"
+      - name: Establish Tailscale Connection
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-        Invoke-RestMethod `
-          -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
-          -Method Post `
-          -ContentType "application/json" `
-          -Body (@{
-            chat_id="${{ secrets.TELEGRAM_CHAT_ID }}"
-            text=$msg
-          } | ConvertTo-Json)
+      - name: Verify RDP Accessibility
+        run: |
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
+              exit 1
+          }
+          Write-Host "TCP connectivity successful!"
 
-    # =====================================
-    # ⛔ OPTIONAL SHUTDOWN CONTROL
-    # =====================================
-    - name: Wait For Manual Cancel
-      shell: powershell
-      run: |
-        Write-Host "Cloud PC is running. Cancel workflow to stop monitoring."
+      - name: Send credentials to Telegram
+        run: |
+          $message = "RDP ACCESS DETAILS`n`nIP Address: $env:TAILSCALE_IP`nUsername: RDP`nPassword: $(($env:RDP_CREDS -split 'Password: ')[1])`n`nGenerated at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+          $telegramUrl = "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+          $body = @{
+            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
+            text = $message
+          } | ConvertTo-Json
+          
+          Invoke-RestMethod -Uri $telegramUrl -Method Post -ContentType "application/json" -Body $body
 
-        while ($true) {
-          Start-Sleep -Seconds 300
-        }
+      - name: Save cached data (for persistence)
+        uses: actions/cache@v3
+        with:
+          path: C:/rdp_persistent_data
+          key: ${{ runner.os }}-rdp-data-${{ hashFiles('**/*') }}
+      - name: Maintain Connection with Expiry + Mono
+        run: |
+          $durationMinutes = 360   # CHANGE HERE (minutes)
+          $endTime = (Get-Date).AddMinutes($durationMinutes)
+
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "Expires in: $durationMinutes minutes"
+          Write-Host "==================`n"
+
+          # Prevent sleep / idle disconnect
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Sleep {
+              [DllImport("kernel32.dll")]
+              public static extern uint SetThreadExecutionState(uint esFlags);
+          }
+"@
+
+          $ES_CONTINUOUS = 0x80000000
+          $ES_SYSTEM_REQUIRED = 0x00000001
+          [Sleep]::SetThreadExecutionState($ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED)
+
+          Add-Type -AssemblyName System.Windows.Forms
+
+          while ((Get-Date) -lt $endTime) {
+
+              $remaining = $endTime - (Get-Date)
+              $timeLeft = "{0:D2}:{1:D2}:{2:D2}" -f `
+                          $remaining.Hours, `
+                          $remaining.Minutes, `
+                          $remaining.Seconds
+
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP Active | Time Left: $timeLeft"
+
+              # Mono-style keep-alive activity
+              [System.Windows.Forms.SendKeys]::SendWait("{NUMLOCK}")
+              Start-Sleep -Seconds 60
+          }
+
+          Write-Host "`nRDP SESSION EXPIRED — Shutting down workflow."
+
+          # Optional Telegram expiry notice
+          $msg = "RDP session expired at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+          $telegramUrl = "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+          $body = @{
+            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
+            text = $msg
+          } | ConvertTo-Json
+          
+          Invoke-RestMethod -Uri $telegramUrl -Method Post -ContentType "application/json" -Body $body
+
