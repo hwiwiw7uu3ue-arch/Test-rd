@@ -110,58 +110,16 @@ jobs:
         with:
           path: C:/rdp_persistent_data
           key: ${{ runner.os }}-rdp-data-${{ hashFiles('**/*') }}
-      - name: Maintain Connection with Expiry + Mono
-        run: |
-          $durationMinutes = 360   # CHANGE HERE (minutes)
-          $endTime = (Get-Date).AddMinutes($durationMinutes)
 
+      - name: Maintain Connection
+        run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "Expires in: $durationMinutes minutes"
           Write-Host "==================`n"
-
-          # Prevent sleep / idle disconnect
-          Add-Type -TypeDefinition @"
-          using System;
-          using System.Runtime.InteropServices;
-          public class Sleep {
-              [DllImport("kernel32.dll")]
-              public static extern uint SetThreadExecutionState(uint esFlags);
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
           }
-"@
-
-          $ES_CONTINUOUS = 0x80000000
-          $ES_SYSTEM_REQUIRED = 0x00000001
-          [Sleep]::SetThreadExecutionState($ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED)
-
-          Add-Type -AssemblyName System.Windows.Forms
-
-          while ((Get-Date) -lt $endTime) {
-
-              $remaining = $endTime - (Get-Date)
-              $timeLeft = "{0:D2}:{1:D2}:{2:D2}" -f `
-                          $remaining.Hours, `
-                          $remaining.Minutes, `
-                          $remaining.Seconds
-
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP Active | Time Left: $timeLeft"
-
-              # Mono-style keep-alive activity
-              [System.Windows.Forms.SendKeys]::SendWait("{NUMLOCK}")
-              Start-Sleep -Seconds 60
-          }
-
-          Write-Host "`nRDP SESSION EXPIRED — Shutting down workflow."
-
-          # Optional Telegram expiry notice
-          $msg = "RDP session expired at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-          $telegramUrl = "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
-          $body = @{
-            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
-            text = $msg
-          } | ConvertTo-Json
           
-          Invoke-RestMethod -Uri $telegramUrl -Method Post -ContentType "application/json" -Body $body
-
