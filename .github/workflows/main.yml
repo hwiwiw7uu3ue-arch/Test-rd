@@ -13,7 +13,7 @@ jobs:
     steps:
 
     # =========================================
-    # 🔧 Enable RDP (Secure Defaults)
+    # 🔧 Enable RDP
     # =========================================
     - name: Enable RDP
       run: |
@@ -25,7 +25,7 @@ jobs:
         Restart-Service TermService -Force
 
     # =========================================
-    # 🔐 Create ULTRA Secure User
+    # 🔐 Create Secure User
     # =========================================
     - name: Create RDP User
       run: |
@@ -70,7 +70,7 @@ jobs:
         echo "TS_IP=$ip" >> $env:GITHUB_ENV
 
     # =========================================
-    # 📩 Telegram Notification
+    # 📩 Telegram Report (YAML SAFE)
     # =========================================
     - name: Send Telegram Report
       run: |
@@ -78,19 +78,19 @@ jobs:
         $duration = 6
         $expiry = $start.AddHours($duration)
 
-        $msg = @"
-🔐 ULTRA RDP SESSION READY
-
-🌐 Address   : $env:TS_IP
-👤 Username  : RDP
-🔑 Password  : $env:RDP_PASS
-
-🕒 Start     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))
-⏳ Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))
-⏱ Duration  : $duration Hours
-
-⚠️ Session auto-terminates
-"@
+        $msg = @(
+        "ULTRA RDP SESSION READY",
+        "",
+        "Address   : $env:TS_IP",
+        "Username  : RDP",
+        "Password  : $env:RDP_PASS",
+        "",
+        "Start     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))",
+        "Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))",
+        "Duration  : $duration Hours",
+        "",
+        "Session auto-terminates"
+        ) -join "`n"
 
         Invoke-RestMethod `
           -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
@@ -102,7 +102,7 @@ jobs:
           } | ConvertTo-Json)
 
     # =========================================
-    # 📊 ULTRA CONTROL DASHBOARD
+    # 📊 ULTRA Dashboard + Animated Expiry
     # =========================================
     - name: Maintain Session (ULTRA)
       run: |
@@ -111,26 +111,25 @@ jobs:
         $expiry = $start.AddHours($duration)
 
         Write-Host ""
-        Write-Host "=================================================="
-        Write-Host "            🚀 ULTRA RDP SESSION ACTIVE"
-        Write-Host "=================================================="
-        Write-Host " Address    : $env:TS_IP"
-        Write-Host " Username   : RDP"
-        Write-Host " Password   : $env:RDP_PASS"
-        Write-Host " Started    : $($start.ToString('yyyy-MM-dd HH:mm:ss'))"
-        Write-Host " Expires    : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))"
-        Write-Host " Duration   : $duration Hours"
-        Write-Host "=================================================="
+        Write-Host "==========================================="
+        Write-Host "         ULTRA RDP SESSION ACTIVE"
+        Write-Host "==========================================="
+        Write-Host " Address   : $env:TS_IP"
+        Write-Host " Username  : RDP"
+        Write-Host " Password  : $env:RDP_PASS"
+        Write-Host " Started   : $($start.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-Host " Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-Host " Duration  : $duration Hours"
+        Write-Host "==========================================="
         Write-Host ""
 
         while ($true) {
-
           $now = Get-Date
           $remain = $expiry - $now
 
           if ($remain.TotalSeconds -le 0) {
             Write-Host ""
-            Write-Host "⛔ SESSION EXPIRED — TERMINATING"
+            Write-Host "SESSION EXPIRED — TERMINATING"
             break
           }
 
@@ -138,7 +137,6 @@ jobs:
           $m = $remain.Minutes
           $s = $remain.Seconds
 
-          Write-Host ("⏳ Remaining Time: {0:D2}:{1:D2}:{2:D2}" -f $h,$m,$s)
-
+          Write-Host ("Remaining Time: {0:D2}:{1:D2}:{2:D2}" -f $h,$m,$s)
           Start-Sleep 30
         }
