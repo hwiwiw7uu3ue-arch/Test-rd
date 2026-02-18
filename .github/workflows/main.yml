@@ -69,7 +69,7 @@ jobs:
 
         echo "TS_IP=$ip" >> $env:GITHUB_ENV
 
-        # =========================================
+    # =========================================
     # 📩 Telegram Report (YAML SAFE)
     # =========================================
     - name: Send Telegram Report
@@ -78,26 +78,29 @@ jobs:
         $duration = 6
         $expiry = $start.AddHours($duration)
 
-        # Using a simple string build to avoid here-string (@") issues in YAML
-        $msg = "🚀 ULTRA RDP SESSION READY`n`n" +
-               "🌐 Address   : $($env:TS_IP)`n" +
-               "👤 Username  : RDP`n" +
-               "🔑 Password  : $($env:RDP_PASS)`n`n" +
-               "🕒 Start     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))`n" +
-               "⏳ Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))`n" +
-               "⏱️ Duration  : $duration Hours`n`n" +
-               "⚠️ Session auto-terminates"
-
-        $payload = @{
-            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
-            text    = $msg
-        } | ConvertTo-Json
+        # Using an array keeps YAML indentation happy!
+        $msg = @(
+          "🔐 ULTRA RDP SESSION READY",
+          "",
+          "🌐 Address   : $env:TS_IP",
+          "👤 Username  : RDP",
+          "🔑 Password  : $env:RDP_PASS",
+          "",
+          "🕒 Start     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))",
+          "⏳ Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))",
+          "⏱️ Duration  : $duration Hours",
+          "",
+          "⚠️ Session auto-terminates"
+        ) -join "`n"
 
         Invoke-RestMethod `
           -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
           -Method Post `
           -ContentType "application/json" `
-          -Body $payload
+          -Body (@{
+            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
+            text    = $msg
+          } | ConvertTo-Json)
 
     # =========================================
     # 📊 ULTRA Dashboard + Animated Expiry
