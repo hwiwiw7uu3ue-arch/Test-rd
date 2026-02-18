@@ -1,131 +1,144 @@
-name: RDP
+name: ULTRA RDP
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'   # Runs every 6 hours at minute 0
+    - cron: '0 */6 * * *'
 
 jobs:
-  secure-rdp:
+  ultra-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
-      - name: Restore cached data (for persistence)
-        uses: actions/cache@v3
-        with:
-          path: C:/rdp_persistent_data
-          key: ${{ runner.os }}-rdp-data-${{ hashFiles('**/*') }}
 
-      - name: Configure Core RDP Settings
-        run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+    # =========================================
+    # 🔧 Enable RDP (Secure Defaults)
+    # =========================================
+    - name: Enable RDP
+      run: |
+        Set-ItemProperty `
+          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          -Name "fDenyTSConnections" -Value 0
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Restart-Service TermService -Force
 
-      - name: Create RDP User with Secure Password
-        run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126))
+    # =========================================
+    # 🔐 Create ULTRA Secure User
+    # =========================================
+    - name: Create RDP User
+      run: |
+        $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+'
+        $password = -join (1..24 | ForEach-Object {
+          $chars[(Get-Random -Maximum $chars.Length)]
+        })
+
+        $secure = ConvertTo-SecureString $password -AsPlainText -Force
+
+        New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+        echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+
+    # =========================================
+    # 🌐 Install Tailscale
+    # =========================================
+    - name: Install Tailscale
+      run: |
+        Invoke-WebRequest `
+          https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi `
+          -OutFile ts.msi
+
+        Start-Process msiexec.exe `
+          -ArgumentList "/i ts.msi /quiet /norestart" -Wait
+
+    - name: Connect Tailscale
+      run: |
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+          --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+
+        for ($i=0; $i -lt 30; $i++) {
+          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          if ($ip) { break }
+          Start-Sleep 4
+        }
+
+        if (-not $ip) { exit 1 }
+
+        echo "TS_IP=$ip" >> $env:GITHUB_ENV
+
+    # =========================================
+    # 📩 Telegram Notification
+    # =========================================
+    - name: Send Telegram Report
+      run: |
+        $start = Get-Date
+        $duration = 6
+        $expiry = $start.AddHours($duration)
+
+        $msg = @"
+🔐 ULTRA RDP SESSION READY
+
+🌐 Address   : $env:TS_IP
+👤 Username  : RDP
+🔑 Password  : $env:RDP_PASS
+
+🕒 Start     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))
+⏳ Expires   : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))
+⏱ Duration  : $duration Hours
+
+⚠️ Session auto-terminates
+"@
+
+        Invoke-RestMethod `
+          -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
+          -Method Post `
+          -ContentType "application/json" `
+          -Body (@{
+            chat_id="${{ secrets.TELEGRAM_CHAT_ID }}"
+            text=$msg
+          } | ConvertTo-Json)
+
+    # =========================================
+    # 📊 ULTRA CONTROL DASHBOARD
+    # =========================================
+    - name: Maintain Session (ULTRA)
+      run: |
+        $start = Get-Date
+        $duration = 6
+        $expiry = $start.AddHours($duration)
+
+        Write-Host ""
+        Write-Host "=================================================="
+        Write-Host "            🚀 ULTRA RDP SESSION ACTIVE"
+        Write-Host "=================================================="
+        Write-Host " Address    : $env:TS_IP"
+        Write-Host " Username   : RDP"
+        Write-Host " Password   : $env:RDP_PASS"
+        Write-Host " Started    : $($start.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-Host " Expires    : $($expiry.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-Host " Duration   : $duration Hours"
+        Write-Host "=================================================="
+        Write-Host ""
+
+        while ($true) {
+
+          $now = Get-Date
+          $remain = $expiry - $now
+
+          if ($remain.TotalSeconds -le 0) {
+            Write-Host ""
+            Write-Host "⛔ SESSION EXPIRED — TERMINATING"
+            break
           }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
 
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $h = [int]$remain.TotalHours
+          $m = $remain.Minutes
+          $s = $remain.Seconds
 
-      - name: Establish Tailscale Connection
-        run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host ("⏳ Remaining Time: {0:D2}:{1:D2}:{2:D2}" -f $h,$m,$s)
 
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
-
-          - name: Send credentials to Telegram
-        run: |
-          # Extract the password and clean up whitespace
-          $pwd = ($env:RDP_CREDS -split 'Password: ')[1].Trim()
-          
-          # Get current UTC time and convert to India Standard Time (IST)
-          $istZone = [System.TimeZoneInfo]::FindSystemTimeZoneById("India Standard Time")
-          $utcNow = [System.DateTime]::UtcNow
-          $istNow = [System.TimeZoneInfo]::ConvertTimeFromUtc($utcNow, $istZone)
-          
-          # Calculate expiration time (6 hours later in IST)
-          $istExp = $istNow.AddHours(6)
-          
-          # Format the output strings
-          $genTime = $istNow.ToString('yyyy-MM-dd HH:mm:ss')
-          $expTime = $istExp.ToString('yyyy-MM-dd HH:mm:ss')
-          
-          # Build the HTML formatted message
-          $message = "🖥️ <b>RDP ACCESS READY</b> 🖥️`n`n"
-          $message += "🌐 <b>IP Address:</b> <code>$env:TAILSCALE_IP</code>`n"
-          $message += "👤 <b>Username:</b> <code>RDP</code>`n"
-          $message += "🔑 <b>Password:</b> <code>$pwd</code>`n`n"
-          $message += "📅 <b>Generated:</b> $genTime IST`n"
-          $message += "⏳ <b>Expires At:</b> $expTime IST"
-          
-          $telegramUrl = "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
-          
-          # Send request with HTML parsing enabled
-          $body = @{
-            chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
-            text = $message
-            parse_mode = "HTML"
-          } | ConvertTo-Json
-          
-          Invoke-RestMethod -Uri $telegramUrl -Method Post -ContentType "application/json" -Body $body
+          Start-Sleep 30
+        }
